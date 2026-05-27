@@ -614,17 +614,19 @@
 
 /* =========================================
    BUTTON FIXES IN MODALS
-   Cancel — dark text on light background
+   Cancel — light text on translucent dark background
 ========================================= */
 #llmt-speak-cancel,
-#llmt-action-cancel {
+#llmt-action-cancel,
+#llmt-think-cancel {
     background: rgba(255, 255, 255, 0.12) !important;
     border: 1px solid rgba(255, 255, 255, 0.25) !important;
     color: #ddd !important;
     font-weight: 500;
 }
 #llmt-speak-cancel:hover,
-#llmt-action-cancel:hover {
+#llmt-action-cancel:hover,
+#llmt-think-cancel:hover {
     background: rgba(255, 255, 255, 0.22) !important;
     color: #fff !important;
 }
