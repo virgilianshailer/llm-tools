@@ -217,7 +217,7 @@ function loadSettings() {
         if (settings.greetingPickerEnabled === undefined) settings.greetingPickerEnabled = true;
         if (settings.widgetStyle === undefined) settings.widgetStyle = "classic";
         if (settings.translateEnabled === undefined) settings.translateEnabled = false;
-        if (settings.translateLang === undefined)    settings.translateLang    = "Russian";
+        if (settings.translateLang === undefined)    settings.translateLang    = "";
         if (settings.dynCaptionEnabled === undefined) settings.dynCaptionEnabled = false;
         if (settings.dynCaptionConfirm === undefined) settings.dynCaptionConfirm = true;
     }
@@ -375,7 +375,7 @@ function buildSettingsUI() {
         }
     });
     $("#llmt-s-trans-lang").val(settings.translateLang).on("change", function () {
-        settings.translateLang = this.value.trim() || "Russian";
+        settings.translateLang = this.value.trim();
         saveSettings();
     });
     $("#llmt-s-dyncap").prop("checked", settings.dynCaptionEnabled).on("change", function () {
@@ -1840,6 +1840,16 @@ async function llmtToggleTranslation(mesId, $mes, $btn) {
         $mes.data('llmt-trans-state', 'original');
         $btn.removeClass('llm-translate-btn-active').attr('title', 'Translate (LLM) 🌐')
             .html('<i class="fa-solid fa-language"></i>');
+        return;
+    }
+
+    // Guard: no target language set
+    if (!settings.translateLang || !settings.translateLang.trim()) {
+        if (typeof toastr !== 'undefined' && toastr.warning) {
+            toastr.warning('Set a target language in Extensions → LLM Tools → Target Language first.', 'LLM Tools');
+        } else {
+            alert('Set a target language in Extensions → LLM Tools → Target Language first.');
+        }
         return;
     }
 
