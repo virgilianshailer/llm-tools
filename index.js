@@ -2000,35 +2000,95 @@ function llmtRestoreAllTranslations() {
     });
 }
 
+// Safety net: if GENERATION_STOPPED never fires (user aborted, API error,
+// network drop, etc.), the isManualRethink flag would stay stuck at true and
+// every subsequent click on 🧠 would silently no-op. This timer auto-resets
+// the flag after a generous timeout so the button never gets permanently
+// "broken" for the rest of the session.
+var manualRethinkWatchdog = null;
+
+function clearManualRethinkWatchdog() {
+    if (manualRethinkWatchdog) {
+        clearTimeout(manualRethinkWatchdog);
+        manualRethinkWatchdog = null;
+    }
+}
+
+function llmtToast(level, msg) {
+    if (typeof toastr !== 'undefined' && toastr[level]) {
+        toastr[level](msg, 'LLM Tools');
+    } else {
+        console.warn('[LLM Tools]', msg);
+    }
+}
+
 function startManualRethink(mesId, $mesNode) {
-    if (!scriptModule || !scriptModule.chat || scriptModule.is_generating) return;
-    if (isManualRethink) return;
+    if (!scriptModule || !scriptModule.chat) {
+        llmtToast('warning', 'SillyTavern is still loading. Try again in a moment.');
+        return;
+    }
+    if (scriptModule.is_generating) {
+        llmtToast('info', 'A generation is already running.');
+        return;
+    }
+    if (isManualRethink) {
+        llmtToast('info', 'A rethink is already in progress.');
+        return;
+    }
 
     var chatArr      = scriptModule.chat;
-    var systemPrompt = RETHINK_MODES[settings.rethinkMode].prompt;
-    var lastUserIdx  = -1;
-    for (var i = mesId - 1; i >= 0; i--) { if (chatArr[i].is_user) { lastUserIdx = i; break; } }
+    var systemPrompt = RETHINK_MODES[settings.rethinkMode] && RETHINK_MODES[settings.rethinkMode].prompt;
+    if (!systemPrompt) {
+        llmtToast('error', 'Unknown Rethink mode: ' + settings.rethinkMode);
+        return;
+    }
 
-    if (lastUserIdx !== -1) {
-        isManualRethink    = true;
-        manualRethinkMesId = mesId;
-        manualUserIdx      = lastUserIdx;
-        manualOriginalText = chatArr[lastUserIdx].mes.replace(/<span class="llm-tools-hidden-prompt">[\s\S]*?<\/span>/g, "").trim();
-        chatArr[lastUserIdx].mes = manualOriginalText + `<span class="llm-tools-hidden-prompt">\n\n${systemPrompt}</span>`;
-        var $swipeBtn = $mesNode.find('.swipe_right');
-        if ($swipeBtn.length) $swipeBtn.click(); else $('#GenerateButton').click();
+    var lastUserIdx = -1;
+    for (var i = mesId - 1; i >= 0; i--) {
+        var entry = chatArr[i];
+        if (entry && entry.is_user) { lastUserIdx = i; break; }
+    }
+
+    if (lastUserIdx === -1) {
+        llmtToast('warning', 'Rethink needs a user message before this AI reply to attach the style hint to.');
+        return;
+    }
+
+    isManualRethink    = true;
+    manualRethinkMesId = mesId;
+    manualUserIdx      = lastUserIdx;
+    manualOriginalText = chatArr[lastUserIdx].mes.replace(/<span class="llm-tools-hidden-prompt">[\s\S]*?<\/span>/g, "").trim();
+    chatArr[lastUserIdx].mes = manualOriginalText + `<span class="llm-tools-hidden-prompt">\n\n${systemPrompt}</span>`;
+
+    // Watchdog: if GENERATION_STOPPED never fires for any reason, restore the
+    // user message and free the flag after 3 minutes so the button keeps
+    // working for the rest of the session.
+    clearManualRethinkWatchdog();
+    manualRethinkWatchdog = setTimeout(function () {
+        if (isManualRethink) {
+            console.warn('[LLM Tools] Rethink watchdog fired — forcing cleanup.');
+            finishManualRethink();
+        }
+    }, 180000);
+
+    var $swipeBtn = $mesNode.find('.swipe_right');
+    if ($swipeBtn.length) {
+        $swipeBtn.click();
+    } else {
+        $('#GenerateButton').click();
     }
 }
 
 async function finishManualRethink() {
     if (!isManualRethink) return;
-    if (manualUserIdx !== -1 && scriptModule.chat[manualUserIdx]) {
+    clearManualRethinkWatchdog();
+    if (manualUserIdx !== -1 && scriptModule && scriptModule.chat && scriptModule.chat[manualUserIdx]) {
         scriptModule.chat[manualUserIdx].mes = manualOriginalText;
     }
     isManualRethink    = false;
     manualRethinkMesId = -1;
     manualUserIdx      = -1;
-    await safeSaveChat();
+    try { await safeSaveChat(); } catch (e) { console.error('[LLM Tools] finishManualRethink save failed:', e); }
 }
 
 function applyAutoRethink() {
@@ -2615,6 +2675,12 @@ function bindEvents() {
     });
     
     es.on(et.CHARACTER_MESSAGE_RENDERED, function () { 
+        // Belt-and-suspenders: if a manual rethink swipe just produced a new
+        // message but GENERATION_STOPPED hasn't fired yet (some ST builds
+        // fire it late or not at all on swipes), clean up here too.
+        if (isManualRethink) {
+            try { finishManualRethink(); } catch (e) { console.error('[LLM Tools] finishManualRethink (on render) failed:', e); }
+        }
         if (settings.enabled) addMessageButtons(); 
         if (settings.visualNovelMode) updateVnView({ force: true });
     });
@@ -2712,8 +2778,17 @@ function bindEvents() {
 
     if (et.GENERATION_STOPPED) {
         es.on(et.GENERATION_STOPPED, async function () {
-            await cleanupAutoRethink();
-            if (isManualRethink) await finishManualRethink();
+            try { await cleanupAutoRethink(); } catch (e) { console.error('[LLM Tools] cleanupAutoRethink failed:', e); }
+            if (isManualRethink) {
+                try { await finishManualRethink(); }
+                catch (e) {
+                    console.error('[LLM Tools] finishManualRethink failed, forcing flag reset:', e);
+                    isManualRethink = false;
+                    manualRethinkMesId = -1;
+                    manualUserIdx = -1;
+                    clearManualRethinkWatchdog();
+                }
+            }
             if (settings.visualNovelMode) updateVnView();
         });
     }
