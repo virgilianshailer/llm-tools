@@ -1,0 +1,10 @@
+{
+    "display_name": "LLM Tools",
+    "loading_order": 15,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "virgilianshailer",
+    "version": "1.6.1"
+}
