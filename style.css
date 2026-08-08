@@ -450,6 +450,148 @@
     animation: llmtFadeIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
+/* Wider modal when the action pane is shown */
+#llmt-time-modal.llmt-time-modal-wide {
+    width: 400px;
+}
+
+/* --- Mode tabs (By Time / By Action) --- */
+.llmt-skip-tabs {
+    display: flex;
+    gap: 6px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 10px;
+    padding: 4px;
+    margin-bottom: 18px;
+}
+.llmt-skip-tab {
+    flex: 1;
+    padding: 7px 6px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #888;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 0.18s, color 0.18s;
+}
+.llmt-skip-tab:hover { color: #ddd; }
+.llmt-skip-tab.llmt-skip-tab-active {
+    background: rgba(91, 192, 222, 0.18);
+    color: #5bc0de;
+    box-shadow: inset 0 0 0 1px rgba(91, 192, 222, 0.35);
+}
+
+/* --- Action pane --- */
+.llmt-skip-action-hint {
+    font-size: 12px;
+    color: #888;
+    line-height: 1.5;
+    text-align: left;
+    margin-bottom: 10px;
+}
+.llmt-skip-action-hint b { color: #5bc0de; }
+
+.llmt-skip-action-text {
+    min-height: 70px;
+    text-align: left;
+}
+.llmt-skip-action-text:focus {
+    border-color: #5bc0de;
+    box-shadow: 0 0 0 2px rgba(91, 192, 222, 0.15);
+}
+
+.llmt-skip-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0 22px;
+}
+.llmt-skip-chip {
+    font-size: 11px;
+    color: #9ad4e6;
+    background: rgba(91, 192, 222, 0.08);
+    border: 1px solid rgba(91, 192, 222, 0.25);
+    border-radius: 20px;
+    padding: 4px 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.llmt-skip-chip:hover {
+    background: rgba(91, 192, 222, 0.20);
+    border-color: #5bc0de;
+    color: #fff;
+}
+.llmt-skip-chips:empty {
+    display: none;
+    margin: 0 0 12px;
+}
+
+/* --- Shortcut editor in the extension settings panel --- */
+.llmt-s-chips-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0;
+}
+.llmt-s-chips-empty {
+    color: #777;
+    font-style: italic;
+}
+.llmt-s-chip-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(91, 192, 222, 0.07);
+    border: 1px solid rgba(91, 192, 222, 0.20);
+    border-radius: 8px;
+    padding: 4px 6px 4px 10px;
+}
+.llmt-s-chip-label {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.llmt-s-chip-del {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    color: #888;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+.llmt-s-chip-del:hover {
+    color: #ff6b6b;
+    background: rgba(231, 76, 60, 0.15);
+}
+
+.llmt-s-chips-add {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.llmt-s-chips-add input {
+    flex: 1;
+    min-width: 0;
+}
+.llmt-s-chips-add .menu_button {
+    flex-shrink: 0;
+    margin: 0;
+}
+
 .llmt-time-header {
     font-size: 18px;
     color: #888;
@@ -614,19 +756,17 @@
 
 /* =========================================
    BUTTON FIXES IN MODALS
-   Cancel — light text on translucent dark background
+   Cancel — dark text on light background
 ========================================= */
 #llmt-speak-cancel,
-#llmt-action-cancel,
-#llmt-think-cancel {
+#llmt-action-cancel {
     background: rgba(255, 255, 255, 0.12) !important;
     border: 1px solid rgba(255, 255, 255, 0.25) !important;
     color: #ddd !important;
     font-weight: 500;
 }
 #llmt-speak-cancel:hover,
-#llmt-action-cancel:hover,
-#llmt-think-cancel:hover {
+#llmt-action-cancel:hover {
     background: rgba(255, 255, 255, 0.22) !important;
     color: #fff !important;
 }
@@ -1182,13 +1322,18 @@ body.llmt-vn-mode #chat .mes:last-child .mes_text {
     opacity: 0;
     transform: translateY(8px);
     pointer-events: none;
-    transition: opacity 0.20s ease, transform 0.22s ease;
+    /* `visibility` is inherited, so children cannot re-enable themselves the
+       way they can with `pointer-events`. Delayed until the fade-out ends. */
+    visibility: hidden;
+    transition: opacity 0.20s ease, transform 0.22s ease, visibility 0s linear 0.22s;
     z-index: 3;
 }
 .llmt-mo-popup.llmt-mo-open {
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
+    visibility: visible;
+    transition: opacity 0.20s ease, transform 0.22s ease, visibility 0s;
 }
 
 /* Each row: label + button */
@@ -1220,11 +1365,15 @@ body.llmt-vn-mode #chat .mes:last-child .mes_text {
     height: 30px;
     font-size: 11px;
     opacity: 1;
-    pointer-events: auto;
+    /* Stays none while the popup is closed: an ancestor's pointer-events:none
+       is cancelled by any descendant that sets auto, which made the invisible
+       icons clickable. Enabled by the open state below. */
+    pointer-events: none;
     transform: none;
     flex-shrink: 0;
     transition: background 0.15s, border-color 0.15s;
 }
+.llmt-mo-popup.llmt-mo-open .llmt-mo-btn.llmt-rad-item { pointer-events: auto; }
 .llmt-mo-btn.llmt-rad-item:hover { transform: scale(1.08); }
 .llmt-mo-btn.llmt-rad-item:active { transform: scale(0.93) !important; }
 

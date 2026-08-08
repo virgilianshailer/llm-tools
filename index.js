@@ -36,6 +36,16 @@ var WIDGET_ITEMS =[
     { id: 'vn',       icon: 'fa-book-open',          label: 'VN',       color: '#f5a623', title: 'Visual Novel Mode' },
 ];
 
+// Quick-fill shortcuts for the "By Action" time skip mode.
+// The user can add/remove their own in the extension settings.
+var DEFAULT_SKIP_CHIPS = [
+    'Have breakfast',
+    'Take a shower',
+    'Go to sleep',
+    'Travel to the city',
+    'Train for a while',
+];
+
 var isManualRethink = false;
 var manualRethinkMesId = -1;
 var manualUserIdx = -1;
@@ -96,6 +106,15 @@ async function initAll() {
         window.LLMTools.getCurrentVnChunkIndex = function() { return vnCurrentChunkIndex; };
         window.LLMTools.getCurrentVnChunkText = getCurrentVnChunkText;
         window.LLMTools.getVnTextChunks = getVnTextChunks;
+
+        /* ── v1.7: Greeting Picker bridge (Character Library, Hook Forge, …) ──
+           Other extensions own the browsing UI; the picker and the safe
+           first_mes swap stay here, in one place. */
+        window.LLMTools.hasGreetingPicker = function () { return true; };
+        window.LLMTools.getGreetings = apiGetGreetings;
+        window.LLMTools.openGreetingPicker = apiOpenGreetingPicker;
+        window.LLMTools.startChatWithGreeting = apiStartChatWithGreeting;
+
         console.log("[LLM Tools] Loaded: Quick Erase, Rethink, Time Skip, Action, Speak & Advanced VN Mode!");
     } catch (e) {
         console.error("[LLM Tools] Init error:", e);
@@ -217,9 +236,11 @@ function loadSettings() {
         if (settings.greetingPickerEnabled === undefined) settings.greetingPickerEnabled = true;
         if (settings.widgetStyle === undefined) settings.widgetStyle = "classic";
         if (settings.translateEnabled === undefined) settings.translateEnabled = false;
-        if (settings.translateLang === undefined)    settings.translateLang    = "";
+        if (settings.translateLang === undefined)    settings.translateLang    = "Russian";
         if (settings.dynCaptionEnabled === undefined) settings.dynCaptionEnabled = false;
         if (settings.dynCaptionConfirm === undefined) settings.dynCaptionConfirm = true;
+        if (settings.timeSkipMode === undefined)      settings.timeSkipMode      = "clock";
+        if (!Array.isArray(settings.timeSkipChips))   settings.timeSkipChips     = DEFAULT_SKIP_CHIPS.slice();
     }
 }
 
@@ -317,6 +338,17 @@ function buildSettingsUI() {
             </div>
             <hr class="sysHR" />
             <div class="da-srow llmtools-settings-row">
+                <label><b>⏳ Time Skip — Action Shortcuts</b></label>
+                <small style="color:#888;margin-top:4px;display:block">Quick-fill buttons shown in the <b>By Action</b> tab of the Time Skip dialog.</small>
+                <div id="llmt-s-chips-list" class="llmt-s-chips-list"></div>
+                <div class="llmt-s-chips-add">
+                    <input type="text" id="llmt-s-chip-new" class="text_pole" placeholder="New shortcut, e.g. Cook dinner">
+                    <div class="menu_button" id="llmt-s-chip-add" title="Add shortcut"><i class="fa-solid fa-plus"></i></div>
+                    <div class="menu_button" id="llmt-s-chip-reset" title="Restore default shortcuts"><i class="fa-solid fa-rotate-left"></i></div>
+                </div>
+            </div>
+            <hr class="sysHR" />
+            <div class="da-srow llmtools-settings-row">
                 <label class="checkbox_label">
                     <input type="checkbox" id="llmt-s-dyncap"><span><b>🖼️ Dynamic Caption Prompt</b></span>
                 </label>
@@ -375,7 +407,7 @@ function buildSettingsUI() {
         }
     });
     $("#llmt-s-trans-lang").val(settings.translateLang).on("change", function () {
-        settings.translateLang = this.value.trim();
+        settings.translateLang = this.value.trim() || "Russian";
         saveSettings();
     });
     $("#llmt-s-dyncap").prop("checked", settings.dynCaptionEnabled).on("change", function () {
@@ -383,11 +415,70 @@ function buildSettingsUI() {
         saveSettings();
         $("#llmt-s-dyncap-confirm-row").toggle(this.checked);
     });
+    renderSkipChipSettings();
+    $("#llmt-s-chip-add").on("click", function () { addSkipChipFromInput(); });
+    $("#llmt-s-chip-new").on("keydown", function (e) {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); addSkipChipFromInput(); }
+    });
+    $("#llmt-s-chip-reset").on("click", function () {
+        if (!confirm("Restore the default Time Skip shortcuts? Your custom ones will be removed.")) return;
+        settings.timeSkipChips = DEFAULT_SKIP_CHIPS.slice();
+        saveSettings();
+        renderSkipChipSettings();
+        renderSkipChips();
+    });
+
     $("#llmt-s-dyncap-confirm-row").toggle(!!settings.dynCaptionEnabled);
     $("#llmt-s-dyncap-confirm").prop("checked", settings.dynCaptionConfirm).on("change", function () {
         settings.dynCaptionConfirm = this.checked;
         saveSettings();
     });
+}
+
+/** Renders the editable shortcut list in the extension settings panel. */
+function renderSkipChipSettings() {
+    var $list = $('#llmt-s-chips-list');
+    if (!$list.length) return;
+    $list.empty();
+
+    var list = Array.isArray(settings.timeSkipChips) ? settings.timeSkipChips : [];
+    if (!list.length) {
+        $list.append('<small class="llmt-s-chips-empty">No shortcuts — add one below.</small>');
+        return;
+    }
+
+    list.forEach(function (label, idx) {
+        var $row = $('<div class="llmt-s-chip-row"></div>');
+        $('<span class="llmt-s-chip-label"></span>').text(label).appendTo($row);
+        $('<div class="llmt-s-chip-del" title="Remove"><i class="fa-solid fa-xmark"></i></div>')
+            .on('click', function () {
+                settings.timeSkipChips.splice(idx, 1);
+                saveSettings();
+                renderSkipChipSettings();
+                renderSkipChips();
+            }).appendTo($row);
+        $list.append($row);
+    });
+}
+
+/** Adds the shortcut currently typed in the settings input. */
+function addSkipChipFromInput() {
+    var $input = $('#llmt-s-chip-new');
+    var val = ($input.val() || '').trim();
+    if (!val) return;
+    if (!Array.isArray(settings.timeSkipChips)) settings.timeSkipChips = [];
+
+    var exists = settings.timeSkipChips.some(function (c) {
+        return c.toLowerCase() === val.toLowerCase();
+    });
+    if (exists) { $input.val(''); return; }
+
+    settings.timeSkipChips.push(val);
+    saveSettings();
+    $input.val('');
+    renderSkipChipSettings();
+    renderSkipChips();
 }
 
 function buildVnUI() {
@@ -960,7 +1051,7 @@ function buildWidget() {
     $("#llmt-w-action").on("click", function () { openActionDialog(); });
     $("#llmt-w-speak").on("click",  function () { openSpeakDialog(); });
     $("#llmt-w-think").on("click",  function () { openThinkDialog(); });
-    $("#llmt-w-time").on("click",   function () { $('#llmt-time-overlay').css('display', 'flex').hide().fadeIn(200); });
+    $("#llmt-w-time").on("click",   function () { openTimeSkipDialog(); });
     $("#llmt-w-vn").on("click", function () {
         settings.visualNovelMode = !settings.visualNovelMode;
         saveSettings();
@@ -1078,7 +1169,7 @@ function llmtWidgetAction(action) {
             openThinkDialog();
             break;
         case 'time':
-            $('#llmt-time-overlay').css('display', 'flex').hide().fadeIn(200);
+            openTimeSkipDialog();
             break;
         case 'vn':
             settings.visualNovelMode = !settings.visualNovelMode;
@@ -1722,15 +1813,34 @@ function buildTimeSkipUI() {
             <div class="llmt-time-header">
                 <i class="fa-solid fa-hourglass-half" id="llmt-hourglass"></i> Time Skip
             </div>
-            <div class="llmt-time-display">
-                <span id="llmt-disp-h">00</span><small>h</small>
-                <span id="llmt-disp-m">30</span><small>m</small>
+            <div class="llmt-skip-tabs">
+                <div class="llmt-skip-tab llmt-skip-tab-active" data-mode="clock">
+                    <i class="fa-solid fa-clock"></i> By Time
+                </div>
+                <div class="llmt-skip-tab" data-mode="action">
+                    <i class="fa-solid fa-mug-saucer"></i> By Action
+                </div>
             </div>
-            <div class="llmt-sliders">
-                <label><span>Hours</span> <span id="llmt-lbl-h">0</span></label>
-                <input type="range" class="llmt-slider" id="llmt-range-h" min="0" max="72" value="0">
-                <label><span>Minutes</span> <span id="llmt-lbl-m">30</span></label>
-                <input type="range" class="llmt-slider" id="llmt-range-m" min="0" max="59" step="5" value="30">
+            <div class="llmt-skip-pane" id="llmt-skip-pane-clock">
+                <div class="llmt-time-display">
+                    <span id="llmt-disp-h">00</span><small>h</small>
+                    <span id="llmt-disp-m">30</span><small>m</small>
+                </div>
+                <div class="llmt-sliders">
+                    <label><span>Hours</span> <span id="llmt-lbl-h">0</span></label>
+                    <input type="range" class="llmt-slider" id="llmt-range-h" min="0" max="72" value="0">
+                    <label><span>Minutes</span> <span id="llmt-lbl-m">30</span></label>
+                    <input type="range" class="llmt-slider" id="llmt-range-m" min="0" max="59" step="5" value="30">
+                </div>
+            </div>
+            <div class="llmt-skip-pane" id="llmt-skip-pane-action" style="display:none">
+                <div class="llmt-skip-action-hint">
+                    Describe the activity to skip through — the LLM decides
+                    <b>how long it takes</b> and narrates it.
+                </div>
+                <textarea id="llmt-skip-action-text" class="llmt-modal-textarea llmt-skip-action-text"
+                          placeholder="e.g. have breakfast and get dressed…"></textarea>
+                <div class="llmt-skip-chips" id="llmt-skip-chips"></div>
             </div>
             <div class="llmt-time-actions">
                 <button class="llmt-time-btn" id="llmt-btn-cancel">Cancel</button>
@@ -1739,6 +1849,8 @@ function buildTimeSkipUI() {
         </div>
     </div>`;
     $('body').append(h);
+
+    renderSkipChips();
 
     function updateDisplay() {
         var hVal = $('#llmt-range-h').val();
@@ -1751,13 +1863,69 @@ function buildTimeSkipUI() {
     }
 
     $('#llmt-range-h, #llmt-range-m').on('input', updateDisplay);
+
+    $('.llmt-skip-tab').on('click', function () {
+        setTimeSkipMode($(this).data('mode'));
+    });
+
+    $('#llmt-skip-action-text').on('keydown', function (e) {
+        e.stopPropagation();
+        if (e.ctrlKey && e.key === 'Enter') $('#llmt-btn-confirm').click();
+        if (e.key === 'Escape') $('#llmt-time-overlay').fadeOut(200);
+    });
+
     $('#llmt-btn-cancel').on('click', function () { $('#llmt-time-overlay').fadeOut(200); });
     $('#llmt-btn-confirm').on('click', function () {
-        var h = $('#llmt-range-h').val();
-        var m = $('#llmt-range-m').val();
-        $('#llmt-time-overlay').fadeOut(200);
-        executeTimeSkip(h, m);
+        if (settings.timeSkipMode === 'action') {
+            var act = $('#llmt-skip-action-text').val().trim();
+            if (!act) { $('#llmt-skip-action-text').focus(); return; }
+            $('#llmt-time-overlay').fadeOut(200);
+            $('#llmt-skip-action-text').val('');
+            executeActionSkip(act);
+        } else {
+            var h = $('#llmt-range-h').val();
+            var m = $('#llmt-range-m').val();
+            $('#llmt-time-overlay').fadeOut(200);
+            executeTimeSkip(h, m);
+        }
     });
+}
+
+/** (Re)build the quick-fill chip row inside the Time Skip dialog. */
+function renderSkipChips() {
+    var $chips = $('#llmt-skip-chips');
+    if (!$chips.length) return;
+    $chips.empty();
+
+    var list = Array.isArray(settings.timeSkipChips) ? settings.timeSkipChips : [];
+    list.forEach(function (c) {
+        $('<div class="llmt-skip-chip"></div>').text(c).on('click', function () {
+            $('#llmt-skip-action-text').val(c).focus();
+        }).appendTo($chips);
+    });
+}
+
+/** Switch the Time Skip dialog between clock mode and action mode. */
+function setTimeSkipMode(mode) {
+    var isAction = (mode === 'action');
+    settings.timeSkipMode = isAction ? 'action' : 'clock';
+    saveSettings();
+
+    $('.llmt-skip-tab').each(function () {
+        $(this).toggleClass('llmt-skip-tab-active', $(this).data('mode') === settings.timeSkipMode);
+    });
+    $('#llmt-skip-pane-clock').toggle(!isAction);
+    $('#llmt-skip-pane-action').toggle(isAction);
+    $('#llmt-time-modal').toggleClass('llmt-time-modal-wide', isAction);
+    $('#llmt-btn-confirm').html(isAction
+        ? '<i class="fa-solid fa-forward"></i> Skip Through'
+        : 'Skip Time');
+    if (isAction) setTimeout(function () { $('#llmt-skip-action-text').focus(); }, 60);
+}
+
+function openTimeSkipDialog() {
+    setTimeSkipMode(settings.timeSkipMode || 'clock');
+    $('#llmt-time-overlay').css('display', 'flex').hide().fadeIn(200);
 }
 
 function executeTimeSkip(h, m) {
@@ -1771,6 +1939,31 @@ function executeTimeSkip(h, m) {
     timeStr = timeStr.trim();
 
     var promptText = `Start your response exactly with this text: "***\n*⏳ Time skips forward by ${timeStr}...*\n***\n\n". Then write a detailed narrative describing what happened during this ${timeStr} time skip. How did the characters spend this time? Bring the story smoothly to the present moment. Write ONLY the narrative, do not speak for the characters.`;
+    var $textarea = $('#send_textarea');
+    $textarea.val('/sysgen ' + promptText).trigger('input');
+    $('#send_but').click();
+}
+
+/**
+ * Action-based skip: instead of a fixed number of hours/minutes, the user
+ * names an activity ("have breakfast") and the LLM both narrates it and decides
+ * how much in-story time it consumed.
+ */
+function executeActionSkip(actionText) {
+    var act = String(actionText || '').trim();
+    if (!act) return;
+    act = act.replace(/"/g, "'");
+
+    var promptText = `The user's character now does the following: "${act}".\n`
+        + `First, silently decide how much in-story time this activity realistically takes.\n`
+        + `Start your response exactly with this block, where <activity> is a short summary of the activity `
+        + `and <duration> is your time estimate (e.g. "25 minutes", "2 hours") — both written in the language of the ongoing roleplay:\n`
+        + `"***\n*⏳ <activity> — <duration>...*\n***\n\n"\n`
+        + `Then write a detailed narrative describing how this activity unfolds from beginning to end, `
+        + `what the other characters do meanwhile, and how the surroundings change. `
+        + `Bring the story smoothly to the moment right after the activity is finished. `
+        + `Write ONLY the narrative, do not speak for the characters.`;
+
     var $textarea = $('#send_textarea');
     $textarea.val('/sysgen ' + promptText).trigger('input');
     $('#send_but').click();
@@ -1840,16 +2033,6 @@ async function llmtToggleTranslation(mesId, $mes, $btn) {
         $mes.data('llmt-trans-state', 'original');
         $btn.removeClass('llm-translate-btn-active').attr('title', 'Translate (LLM) 🌐')
             .html('<i class="fa-solid fa-language"></i>');
-        return;
-    }
-
-    // Guard: no target language set
-    if (!settings.translateLang || !settings.translateLang.trim()) {
-        if (typeof toastr !== 'undefined' && toastr.warning) {
-            toastr.warning('Set a target language in Extensions → LLM Tools → Target Language first.', 'LLM Tools');
-        } else {
-            alert('Set a target language in Extensions → LLM Tools → Target Language first.');
-        }
         return;
     }
 
@@ -2000,95 +2183,35 @@ function llmtRestoreAllTranslations() {
     });
 }
 
-// Safety net: if GENERATION_STOPPED never fires (user aborted, API error,
-// network drop, etc.), the isManualRethink flag would stay stuck at true and
-// every subsequent click on 🧠 would silently no-op. This timer auto-resets
-// the flag after a generous timeout so the button never gets permanently
-// "broken" for the rest of the session.
-var manualRethinkWatchdog = null;
-
-function clearManualRethinkWatchdog() {
-    if (manualRethinkWatchdog) {
-        clearTimeout(manualRethinkWatchdog);
-        manualRethinkWatchdog = null;
-    }
-}
-
-function llmtToast(level, msg) {
-    if (typeof toastr !== 'undefined' && toastr[level]) {
-        toastr[level](msg, 'LLM Tools');
-    } else {
-        console.warn('[LLM Tools]', msg);
-    }
-}
-
 function startManualRethink(mesId, $mesNode) {
-    if (!scriptModule || !scriptModule.chat) {
-        llmtToast('warning', 'SillyTavern is still loading. Try again in a moment.');
-        return;
-    }
-    if (scriptModule.is_generating) {
-        llmtToast('info', 'A generation is already running.');
-        return;
-    }
-    if (isManualRethink) {
-        llmtToast('info', 'A rethink is already in progress.');
-        return;
-    }
+    if (!scriptModule || !scriptModule.chat || scriptModule.is_generating) return;
+    if (isManualRethink) return;
 
     var chatArr      = scriptModule.chat;
-    var systemPrompt = RETHINK_MODES[settings.rethinkMode] && RETHINK_MODES[settings.rethinkMode].prompt;
-    if (!systemPrompt) {
-        llmtToast('error', 'Unknown Rethink mode: ' + settings.rethinkMode);
-        return;
-    }
+    var systemPrompt = RETHINK_MODES[settings.rethinkMode].prompt;
+    var lastUserIdx  = -1;
+    for (var i = mesId - 1; i >= 0; i--) { if (chatArr[i].is_user) { lastUserIdx = i; break; } }
 
-    var lastUserIdx = -1;
-    for (var i = mesId - 1; i >= 0; i--) {
-        var entry = chatArr[i];
-        if (entry && entry.is_user) { lastUserIdx = i; break; }
-    }
-
-    if (lastUserIdx === -1) {
-        llmtToast('warning', 'Rethink needs a user message before this AI reply to attach the style hint to.');
-        return;
-    }
-
-    isManualRethink    = true;
-    manualRethinkMesId = mesId;
-    manualUserIdx      = lastUserIdx;
-    manualOriginalText = chatArr[lastUserIdx].mes.replace(/<span class="llm-tools-hidden-prompt">[\s\S]*?<\/span>/g, "").trim();
-    chatArr[lastUserIdx].mes = manualOriginalText + `<span class="llm-tools-hidden-prompt">\n\n${systemPrompt}</span>`;
-
-    // Watchdog: if GENERATION_STOPPED never fires for any reason, restore the
-    // user message and free the flag after 3 minutes so the button keeps
-    // working for the rest of the session.
-    clearManualRethinkWatchdog();
-    manualRethinkWatchdog = setTimeout(function () {
-        if (isManualRethink) {
-            console.warn('[LLM Tools] Rethink watchdog fired — forcing cleanup.');
-            finishManualRethink();
-        }
-    }, 180000);
-
-    var $swipeBtn = $mesNode.find('.swipe_right');
-    if ($swipeBtn.length) {
-        $swipeBtn.click();
-    } else {
-        $('#GenerateButton').click();
+    if (lastUserIdx !== -1) {
+        isManualRethink    = true;
+        manualRethinkMesId = mesId;
+        manualUserIdx      = lastUserIdx;
+        manualOriginalText = chatArr[lastUserIdx].mes.replace(/<span class="llm-tools-hidden-prompt">[\s\S]*?<\/span>/g, "").trim();
+        chatArr[lastUserIdx].mes = manualOriginalText + `<span class="llm-tools-hidden-prompt">\n\n${systemPrompt}</span>`;
+        var $swipeBtn = $mesNode.find('.swipe_right');
+        if ($swipeBtn.length) $swipeBtn.click(); else $('#GenerateButton').click();
     }
 }
 
 async function finishManualRethink() {
     if (!isManualRethink) return;
-    clearManualRethinkWatchdog();
-    if (manualUserIdx !== -1 && scriptModule && scriptModule.chat && scriptModule.chat[manualUserIdx]) {
+    if (manualUserIdx !== -1 && scriptModule.chat[manualUserIdx]) {
         scriptModule.chat[manualUserIdx].mes = manualOriginalText;
     }
     isManualRethink    = false;
     manualRethinkMesId = -1;
     manualUserIdx      = -1;
-    try { await safeSaveChat(); } catch (e) { console.error('[LLM Tools] finishManualRethink save failed:', e); }
+    await safeSaveChat();
 }
 
 function applyAutoRethink() {
@@ -2140,6 +2263,160 @@ function getAltGreetings(char) {
         ||[];
 }
 
+/* ══════════════════════════════════════════════════════════════
+   GREETING PICKER — shared core (v1.7)
+   Everything below is used by BOTH the built-in 🎲 button and the
+   public API, so a bridged caller gets exactly the same behaviour.
+   ══════════════════════════════════════════════════════════════ */
+
+function llmtCharacters() {
+    return (scriptModule && scriptModule.characters) || window.characters || [];
+}
+
+/* Accepts { charId } or { avatar } or { name } — returns { charId, char } or null. */
+function resolveCharTarget(target) {
+    target = target || {};
+    var chars = llmtCharacters();
+
+    var id = target.charId;
+    if (id === undefined || id === null || id === '') id = target.chid;
+    if (id !== undefined && id !== null && id !== '') {
+        id = parseInt(id, 10);
+        if (!isNaN(id) && chars[id]) return { charId: id, char: chars[id] };
+    }
+
+    if (target.avatar) {
+        for (var i = 0; i < chars.length; i++) {
+            if (chars[i] && chars[i].avatar === target.avatar) return { charId: i, char: chars[i] };
+        }
+    }
+    if (target.name) {
+        for (var j = 0; j < chars.length; j++) {
+            if (chars[j] && chars[j].name === target.name) return { charId: j, char: chars[j] };
+        }
+    }
+    return null;
+}
+
+/* Index 0 = the card's own first_mes; 1..n = alternate_greetings[idx - 1]. */
+function greetingList(char) {
+    var out = [{ idx: 0, text: char.first_mes || '', isDefault: true }];
+    var alts = getAltGreetings(char);
+    for (var i = 0; i < alts.length; i++) {
+        out.push({ idx: i + 1, text: alts[i] || '', isDefault: false });
+    }
+    return out;
+}
+
+function greetingPreview(text, char, limit) {
+    limit = limit || 160;
+    var clean = String(text || '')
+        .replace(/\{\{char\}\}/gi, (char && char.name) || 'char')
+        .replace(/\{\{user\}\}/gi, 'User')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\*\*/g, '').replace(/\*/g, '')
+        .trim();
+    var cut = clean.substring(0, limit);
+    if (clean.length > limit) cut += '…';
+    return cut;
+}
+
+/* The one and only place that swaps first_mes and opens the chat.
+   The swap lives in memory only — the card on disk is never touched.
+   It is rolled back by CHAT_CHANGED (see bindEvents) with a timer as a
+   safety net, so a failed/cancelled open can never leave the card dirty. */
+function startOnGreeting(charId, char, text, opts) {
+    opts = opts || {};
+    var patch = (text !== null && text !== undefined) && text !== char.first_mes;
+
+    if (patch) {
+        greetingPatchedCharId      = charId;
+        greetingPatchedOriginalMes = char.first_mes;
+        char.first_mes             = text;
+        scheduleGreetingRestore(opts.restoreMs || 6000);
+    }
+    /* ── "new chat" needs a NAME, not an empty string ──
+       Blanking char.chat looks like "make a fresh chat", and SillyTavern does
+       load an empty one — but every save then dies on the way to disk:
+       getChatResult() pushes the greeting and calls saveChatConditional(), and
+       saveChat() bails at `if (!fileName) return;` because the file name IS
+       characters[this_chid].chat, i.e. ''. The chat exists only in memory, so
+       closing it loses the story — and so does every later save, including the
+       chat metadata other extensions write (Character Library's story hooks
+       were reported exactly this way: "start a hook, close the chat, the story
+       is gone").
+       ST's own doNewChat() names the file before loading it; do the same. */
+    if (opts.newChat !== false) {
+        var stCtx = null;
+        try { stCtx = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) ? SillyTavern.getContext() : null; } catch (e) { }
+        var stamp = '';
+        try { if (stCtx && typeof stCtx.humanizedDateTime === 'function') stamp = stCtx.humanizedDateTime(); } catch (e) { }
+        if (!stamp) {
+            /* same shape ST uses, so its chat list sorts and parses it */
+            var d = new Date();
+            function p2(n) { return (n < 10 ? '0' : '') + n; }
+            stamp = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
+                + '@' + p2(d.getHours()) + 'h' + p2(d.getMinutes()) + 'm' + p2(d.getSeconds()) + 's';
+        }
+        char.chat = (char.name || 'Chat') + ' - ' + stamp;
+    }
+    openCharacterById(charId, opts.fallbackEl || null);
+}
+
+/* ── Public API implementations ── */
+
+function apiGetGreetings(target) {
+    var t = resolveCharTarget(target);
+    if (!t) return [];
+    return greetingList(t.char).map(function (g) {
+        return {
+            idx: g.idx,
+            text: g.text,
+            isDefault: g.isDefault,
+            preview: greetingPreview(g.text, t.char),
+        };
+    });
+}
+
+/* Opens the modal. Resolves with { idx, text } or null if cancelled.
+   startChat !== false → also opens the chat on the chosen greeting. */
+function apiOpenGreetingPicker(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+        var t = resolveCharTarget(opts);
+        if (!t) { resolve(null); return; }
+        if (!getAltGreetings(t.char).length) {
+            if (typeof toastr !== 'undefined') toastr.info('This character has no alternate greetings.', 'LLM Tools');
+            resolve(null);
+            return;
+        }
+        openGreetingPickerPreOpen(t.charId, t.char, opts.cancelLabel || 'Cancel',
+            function (text, idx) {
+                if (opts.startChat !== false) {
+                    startOnGreeting(t.charId, t.char, text, { newChat: opts.newChat });
+                }
+                resolve({ idx: idx, text: text });
+            },
+            function () { resolve(null); }
+        );
+    });
+}
+
+/* No modal — straight to a chat opened on greeting #idx. */
+function apiStartChatWithGreeting(opts) {
+    opts = opts || {};
+    var t = resolveCharTarget(opts);
+    if (!t) return null;
+
+    var list = greetingList(t.char);
+    var idx = parseInt(opts.idx, 10);
+    if (isNaN(idx) || idx < 0 || idx >= list.length) idx = 0;
+
+    var text = list[idx].text;
+    startOnGreeting(t.charId, t.char, idx === 0 ? null : text, { newChat: opts.newChat });
+    return { idx: idx, text: text };
+}
+
 function buildGreetingPickerUI() {
     var h = `
     <div id="llmt-greet-overlay">
@@ -2175,14 +2452,7 @@ function openGreetingPickerPreOpen(charId, char, cancelLabel, onSelect, onCancel
     allGreetings.forEach(function (text, idx) {
         var badgeLabel = idx === 0 ? '⭐ Default' : ('Alt ' + idx);
         var safeText   = text || '';
-        var preview = safeText
-            .replace(/\{\{char\}\}/gi, char.name || 'char')
-            .replace(/\{\{user\}\}/gi, 'User')
-            .replace(/<[^>]+>/g, '')
-            .replace(/\*\*/g, '').replace(/\*/g, '')
-            .trim()
-            .substring(0, 160);
-        if (safeText.replace(/<[^>]+>/g, '').trim().length > 160) preview += '…';
+        var preview    = greetingPreview(safeText, char, 160);
 
         var $badge   = $('<span class="llmt-greet-badge"></span>').text(badgeLabel);
         var $preview = $('<div class="llmt-greet-preview"></div>').text(preview);
@@ -2190,7 +2460,7 @@ function openGreetingPickerPreOpen(charId, char, cancelLabel, onSelect, onCancel
 
         $item.on('click', function () {
             $('#llmt-greet-overlay').fadeOut(200);
-            onSelect(safeText);
+            onSelect(safeText, idx);   /* v1.7: index is handed to the caller too */
         });
         $list.append($item);
     });
@@ -2237,10 +2507,12 @@ function setupGreetingInterceptors() {
 
         openGreetingPickerPreOpen(charId, char, 'Use Default',
             function (selected) {
-                greetingPatchedCharId      = charId;
-                greetingPatchedOriginalMes = char.first_mes;
-                char.first_mes             = selected;
-                scheduleGreetingRestore(6000);
+                if (selected !== char.first_mes) {
+                    greetingPatchedCharId      = charId;
+                    greetingPatchedOriginalMes = char.first_mes;
+                    char.first_mes             = selected;
+                    scheduleGreetingRestore(6000);
+                }
                 greetingPickerBypassFlag   = true;
                 el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
             },
@@ -2277,17 +2549,12 @@ function injectGreetingButtons() {
             e.stopPropagation();
             e.preventDefault();
 
-            var currentChar = chars[charId]; 
+            var currentChar = chars[charId];
             openGreetingPickerPreOpen(charId, currentChar, 'Cancel',
                 function (selected) {
-                    greetingPatchedCharId      = charId;
-                    greetingPatchedOriginalMes = currentChar.first_mes;
-                    currentChar.first_mes      = selected;
-                    scheduleGreetingRestore(6000);
-                    if (currentChar.chat) currentChar.chat = '';
-                    openCharacterById(charId, $item[0]);
+                    startOnGreeting(charId, currentChar, selected, { fallbackEl: $item[0] });
                 },
-                null 
+                null
             );
         });
 
@@ -2675,12 +2942,6 @@ function bindEvents() {
     });
     
     es.on(et.CHARACTER_MESSAGE_RENDERED, function () { 
-        // Belt-and-suspenders: if a manual rethink swipe just produced a new
-        // message but GENERATION_STOPPED hasn't fired yet (some ST builds
-        // fire it late or not at all on swipes), clean up here too.
-        if (isManualRethink) {
-            try { finishManualRethink(); } catch (e) { console.error('[LLM Tools] finishManualRethink (on render) failed:', e); }
-        }
         if (settings.enabled) addMessageButtons(); 
         if (settings.visualNovelMode) updateVnView({ force: true });
     });
@@ -2778,17 +3039,8 @@ function bindEvents() {
 
     if (et.GENERATION_STOPPED) {
         es.on(et.GENERATION_STOPPED, async function () {
-            try { await cleanupAutoRethink(); } catch (e) { console.error('[LLM Tools] cleanupAutoRethink failed:', e); }
-            if (isManualRethink) {
-                try { await finishManualRethink(); }
-                catch (e) {
-                    console.error('[LLM Tools] finishManualRethink failed, forcing flag reset:', e);
-                    isManualRethink = false;
-                    manualRethinkMesId = -1;
-                    manualUserIdx = -1;
-                    clearManualRethinkWatchdog();
-                }
-            }
+            await cleanupAutoRethink();
+            if (isManualRethink) await finishManualRethink();
             if (settings.visualNovelMode) updateVnView();
         });
     }
